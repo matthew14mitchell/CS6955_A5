@@ -4,16 +4,9 @@ from torch.distributions.categorical import Categorical
 from torch.optim import Adam
 import numpy as np
 import gymnasium as gym
+from core import MLPCategoricalActor, MLPGaussianActor
 from gymnasium.spaces import Discrete, Box
 
-
-def mlp(sizes, activation=nn.Tanh, output_activation=nn.Identity):
-    # Build a feedforward neural network.
-    layers = []
-    for j in range(len(sizes)-1):
-        act = activation if j < len(sizes)-2 else output_activation
-        layers += [nn.Linear(sizes[j], sizes[j+1]), act()]
-    return nn.Sequential(*layers)
 
 def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2,
           epochs=50, batch_size=5000):
@@ -21,16 +14,14 @@ def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2,
     # make environment, check spaces, get obs / act dims
     env_train = gym.make(env_name)
     env_render = gym.make(env_name, render_mode="human")
-    assert isinstance(env_train.observation_space, Box), \
-        "This example only works for envs with continuous state spaces."
-    assert isinstance(env_train.action_space, Discrete), \
-        "This example only works for envs with discrete action spaces."
+
+    isDiscrete = env_train.action_space.__class__ == Discrete
 
     obs_dim = env_train.observation_space.shape[0]
-    n_acts = env_train.action_space.n
+    n_acts = env_train.action_space.n if isDiscrete else env_train.action_space.shape[0]
 
     # make core of policy network
-    logits_net = mlp(sizes=[obs_dim]+hidden_sizes+[n_acts])
+    logits_net = MLPCategoricalActor(obs_dim, n_acts, hidden_sizes, nn.Tanh) if isDiscrete else MLPGaussianActor(obs_dim, n_acts, hidden_sizes, nn.Tanh)
 
     # make function to compute action distribution
     def reward_to_go(rews):
@@ -41,17 +32,18 @@ def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2,
         return rtgs
 
     def get_policy(obs):
-        logits = logits_net(obs)
-        return Categorical(logits=logits)
+        pi, _ = logits_net.forward(obs)
+        return pi
 
     # make action selection function (outputs int actions, sampled from policy)
     def get_action(obs):
-        return get_policy(obs).sample().item()
+        action = get_policy(obs).sample()
+        return action.item() if isDiscrete else action.numpy()
 
     # make loss function whose gradient, for the right data, is policy gradient
     def compute_loss(obs, act, weights):
-        logp = get_policy(obs).log_prob(act)
-        return -(logp * weights).mean()
+        _, logp_a = logits_net.forward(obs, act)
+        return -(logp_a * weights).mean()
 
     # make optimizer
     optimizer = Adam(logits_net.parameters(), lr=lr)
@@ -108,7 +100,7 @@ def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2,
         # take a single policy gradient update step
         optimizer.zero_grad()
         batch_loss = compute_loss(obs=torch.as_tensor(batch_obs, dtype=torch.float32),
-                                  act=torch.as_tensor(batch_acts, dtype=torch.int32),
+                                  act=torch.as_tensor(np.array(batch_acts), dtype=torch.int32 if isDiscrete else torch.float32),
                                   weights=torch.as_tensor(batch_weights, dtype=torch.float32)
                                   )
         batch_loss.backward()
@@ -117,12 +109,14 @@ def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2,
 
     # training loop
     for i in range(epochs):
-        if (False):
+        if (i % 10 == 0):
             batch_loss, batch_rets, batch_lens = train_one_epoch(True)
         else:
             batch_loss, batch_rets, batch_lens = train_one_epoch(False)
         print('epoch: %3d \t loss: %.3f \t return: %.3f \t ep_len: %.3f'%
               (i, batch_loss, np.mean(batch_rets), np.mean(batch_lens)))
+
+    env_render.close()
 
 if __name__ == '__main__':
     import argparse
