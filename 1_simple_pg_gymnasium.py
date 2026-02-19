@@ -6,6 +6,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium.spaces import Discrete, Box
 
+
 def mlp(sizes, activation=nn.Tanh, output_activation=nn.Identity):
     # Build a feedforward neural network.
     layers = []
@@ -15,17 +16,18 @@ def mlp(sizes, activation=nn.Tanh, output_activation=nn.Identity):
     return nn.Sequential(*layers)
 
 def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2, 
-          epochs=50, batch_size=5000, render=False):
+          epochs=50, batch_size=5000):
 
     # make environment, check spaces, get obs / act dims
-    env = gym.make(env_name)
-    assert isinstance(env.observation_space, Box), \
+    env_train = gym.make(env_name)
+    env_render = gym.make(env_name, render_mode="human")
+    assert isinstance(env_train.observation_space, Box), \
         "This example only works for envs with continuous state spaces."
-    assert isinstance(env.action_space, Discrete), \
+    assert isinstance(env_train.action_space, Discrete), \
         "This example only works for envs with discrete action spaces."
 
-    obs_dim = env.observation_space.shape[0]
-    n_acts = env.action_space.n
+    obs_dim = env_train.observation_space.shape[0]
+    n_acts = env_train.action_space.n
 
     # make core of policy network
     logits_net = mlp(sizes=[obs_dim]+hidden_sizes+[n_acts])
@@ -48,7 +50,7 @@ def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2,
     optimizer = Adam(logits_net.parameters(), lr=lr)
 
     # for training policy
-    def train_one_epoch():
+    def train_one_epoch(render):
         # make some empty lists for logging.
         batch_obs = []          # for observations
         batch_acts = []         # for actions
@@ -56,27 +58,20 @@ def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2,
         batch_rets = []         # for measuring episode returns
         batch_lens = []         # for measuring episode lengths
 
-        # reset episode-specific variables
-        obs, info = env.reset()  # updated reset handling
+        # reset episode-specific variables - use render env for first episode
+        current_env = env_render if render else env_train
+        obs, info = current_env.reset()
         done = False            # signal from environment that episode is over
         ep_rews = []            # list for rewards accrued throughout ep
-
-        # render first episode of each epoch
-        finished_rendering_this_epoch = False
 
         # collect experience by acting in the environment with current policy
         while True:
 
-            # rendering
-            if (not finished_rendering_this_epoch) and render:
-                env.render()
-
             # save obs
             batch_obs.append(obs.copy())
-
             # act in the environment
             act = get_action(torch.as_tensor(obs, dtype=torch.float32))
-            obs, rew, terminated, truncated, info = env.step(act)
+            obs, rew, terminated, truncated, info = current_env.step(act)
             done = terminated or truncated
 
             # save action, reward
@@ -92,12 +87,12 @@ def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2,
                 # the weight for each logprob(a|s) is R(tau)
                 batch_weights += [ep_ret] * ep_len
 
-                # reset episode-specific variables
-                obs, info = env.reset()
-                done, ep_rews = False, []
+                # switch to non-rendering env for remaining episodes
+                current_env = env_train
 
-                # won't render again this epoch
-                finished_rendering_this_epoch = True
+                # reset episode-specific variables
+                obs, info = current_env.reset()
+                done, ep_rews = False, []
 
                 # end experience loop if we have enough of it
                 if len(batch_obs) > batch_size:
@@ -115,7 +110,10 @@ def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2,
 
     # training loop
     for i in range(epochs):
-        batch_loss, batch_rets, batch_lens = train_one_epoch()
+        if (False):
+            batch_loss, batch_rets, batch_lens = train_one_epoch(True)
+        else:
+            batch_loss, batch_rets, batch_lens = train_one_epoch(False)
         print('epoch: %3d \t loss: %.3f \t return: %.3f \t ep_len: %.3f'%
                 (i, batch_loss, np.mean(batch_rets), np.mean(batch_lens)))
 
@@ -127,4 +125,4 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=1e-2)
     args = parser.parse_args()
     print('\nUsing simplest formulation of policy gradient.\n')
-    train(env_name=args.env_name, render=args.render, lr=args.lr)
+    train(env_name=args.env_name, lr=args.lr, epochs=101)
